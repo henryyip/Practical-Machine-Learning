@@ -1,0 +1,148 @@
+Predict the manner in which participants did an exercise
+========================================================
+
+In this project,data was collected from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+The goal of this project is to predict the manner in which some participants did the exercise.
+
+The data is obtained from http://groupware.les.inf.puc-rio.br/har
+(Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6.)
+
+
+```{r}
+library(caret)
+raw_train <- read.table("pml-training.csv", header = TRUE, sep = ",")
+```
+
+The folowing features are removed from the pml-training dataset:
+(1) Columns which contains mainly NA
+(2) Columns which contains many blanks (kurtosis and skewness)
+(3) Timestamp and Windows column since they describes how the data is collected and should have nothing to do with activity class.
+(4) Amplitides, max and mean, since most of them are zero or contains Div-by-0 error
+(5) Index X, Username: should have nothing to do with activity class 
+
+
+```{r}
+#Remove columns which contains NA
+train_rm <- raw_train[,colSums(is.na(raw_train))==0]
+
+#Remove columns with kurtosis and skewness since it contains many blanks
+train_rm = train_rm[,-grep("kurtosis|skewness", names(train_rm))]
+
+#Remove the timestamps and windows too since they should have nothing to do with activity class
+train_rm = train_rm[,-grep("timestamp|window", names(train_rm))]
+
+#Remove the amplitudes, max, mean too, since most of them are zero or #Div/0!
+train_rm = train_rm[,-grep("amplitude|max|min", names(train_rm))]
+
+#Remove X and user_name
+train_rm = train_rm[,names(train_rm)!="X" & names(train_rm)!="user_name"]
+
+```
+
+After this stage, a total of 52 features remained:
+```{r}
+names(train_rm)
+```
+
+The pml-training dataset is split into 80/20 for training/test respectively:
+```{r}
+set.seed(12345)
+inTrain = createDataPartition(y=train_rm$classe, p = 0.8, list=FALSE)
+training = train_rm[inTrain,]
+testing = train_rm[-inTrain,]
+```
+
+Random forest with default setting is run with the training dataset with default settings (not shown). However, it takes too long to execute, and does not complete after 30min. 
+
+Therefore, feature reduction would be necessary. To do so, less data is to be used for each execution of random forest.
+
+The training set is split into 10 folds:
+```{r}
+folds <-createFolds(y=training$classe,k=10,list=TRUE, returnTrain=FALSE)
+```
+
+The idea is to run a simpler random forest (one with 100 trees instead of default 500 trees) on each of the 10 folds. The Variable Importance reported in the finalModel of each of the 10 runs is retrieved and aggregated to have a rough understanding of the importance of the features.
+
+
+```{r}
+# list of the 52 feature names
+features <- sort(colnames(training))
+features <- features[features != "classe"]
+features <- data.frame(features)
+```
+
+The following takes about 10min on a laptop with Intel Core i5 with 4 GB RAM:
+```{r}
+for (i in 1:10) { 
+  
+  modFit <- train(classe~., method = "rf", ntree=100, data=training[folds[[i]],])
+  fm <- modFit$finalModel
+  vi <- varImp(fm)
+  features[paste("Fold", toString(i), sep='.')] <- vi[sort(row.names(vi)),]
+}
+```
+
+How does the averagevariable importance look like across the 10 folds?
+```{r}
+features["Ave.Imp"] <- rowMeans(features[2:11], dims = 1)
+features<-features[order(-features$Ave.Imp), ]
+rankedFeatures <- cbind(feature=features[1], Ave.Imp = features[,"Ave.Imp"])
+rankedFeatures
+```
+
+Let's take the first.. 18 features (with mean variable importance > 20.0) and use them to train the full training set:
+
+```{r}
+# Takes about 5 min
+top18features <- rownames(rankedFeatures)[1:18]
+top18 <- as.numeric(top18features)
+
+reduced18FeatureTRAIN <- training[top18]
+reduced18FeatureTRAIN$classe <- training$classe
+
+modFit18 <- train(classe~., method = "rf", ntree=100, data=reduced18FeatureTRAIN)
+fm18 <- modFit18$finalModel 
+modFit18$finalModel
+```
+The OOB estimate of error rate is 3.69%
+
+I would expect that out of sample error to be higher, as the model will be applied to unseen data.
+
+To verify, the trained model is applied on the testing set for cross-validation:
+
+```{r}
+predict18TEST <- predict(modFit18, newdata = testing)
+confusionMatrix(predict18TEST,testing$classe) 
+```
+
+The estimated out of sample error using the testing set is: 3.44%
+(1-accuracy:0.9656)
+
+Other work done but not shown here due to computation issues in generating the knitted HTML:
+
+I've also played with various settings (eg. changing the number of features to include the top 24 features (average variable importance > 15.0), for example, or use more trees (eg. 500) when training the model. There are slight improvement in accuracy, but the computation time may increase a fair bit.
+
+Finally, the model is applied to predict the activity class of the 20 cases:
+
+```{r}
+# raw_testcase <- read.table("pml-testing.csv", header = TRUE, sep = ",")
+# predict_testcase <- predict(modFit18, newdata = raw_testcase)
+# predict_testcase
+
+# pml_write_files = function(x){
+#   n = length(x)
+#   for(i in 1:n){
+#     filename = paste0("problem_id_",i,".txt")
+#     write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+#   }
+# }
+# 
+# pml_write_files(predict_testcase)
+
+```
+
+
+
+
+
